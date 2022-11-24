@@ -1,3 +1,4 @@
+// Copyright (C) 2022 Synaptics Incorporated. All rights reserved
 /*
  *   Copyright (C) 2010 Felix Fietkau <nbd@openwrt.org>
  *
@@ -15,6 +16,20 @@
  *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307, USA.
  *
  */
+
+// INFORMATION CONTAINED IN THIS DOCUMENT IS PROVIDED "AS-IS,” AND SYNAPTICS
+// EXPRESSLY DISCLAIMS ALL EXPRESS AND IMPLIED WARRANTIES, INCLUDING ANY IMPLIED
+// WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE, AND ANY
+// WARRANTIES OF NON-INFRINGEMENT OF ANY INTELLECTUAL PROPERTY RIGHTS. IN NO
+// EVENT SHALL SYNAPTICS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+// PUNITIVE, OR CONSEQUENTIAL DAMAGES ARISING OUT OF OR IN CONNECTION WITH THE
+// USE OF THE INFORMATION CONTAINED IN THIS DOCUMENT, HOWEVER CAUSED AND BASED
+// ON ANY THEORY OF LIABILITY, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR
+// OTHER TORTIOUS ACTION, AND EVEN IF SYNAPTICS WAS ADVISED OF THE POSSIBILITY OF
+// SUCH DAMAGE. IF A TRIBUNAL OF COMPETENT JURISDICTION DOES NOT PERMIT THE
+// DISCLAIMER OF DIRECT DAMAGES OR ANY OTHER DAMAGES, SYNAPTICS’ TOTAL
+// CUMULATIVE LIABILITY TO ANY PARTY SHALL NOT EXCEED ONE HUNDRED U.S. DOLLARS.
+
 #ifndef __RELAYD_H
 #define __RELAYD_H
 
@@ -33,6 +48,8 @@
 
 #include <libubox/uloop.h>
 #include <libubox/list.h>
+
+#include <pcap.h>
 
 #define DEBUG
 #ifdef DEBUG
@@ -61,8 +78,10 @@ struct relayd_interface {
 	struct list_head list;
 	struct uloop_fd fd;
 	struct uloop_fd bcast_fd;
+	struct uloop_fd dhcp_unicast_sniffer_fd;
 	struct sockaddr_ll sll;
 	struct sockaddr_ll bcast_sll;
+	pcap_t *pcap_handle;
 	char ifname[IFNAMSIZ];
 	struct list_head hosts;
 	uint8_t src_ip[4];
@@ -128,5 +147,6 @@ void relayd_add_pending_route(const uint8_t *gateway, const uint8_t *dest, uint8
 
 void relayd_forward_bcast_packet(struct relayd_interface *from_rif, void *packet, int len);
 bool relayd_handle_dhcp_packet(struct relayd_interface *rif, void *data, int len, bool forward, bool parse);
+bool relayd_handle_unicast_dhcp_packet(struct relayd_interface *rif, void *data, int len, bool forward, bool parse);
 
 #endif

@@ -9,7 +9,7 @@ IF(APPLE)
 ENDIF()
 
 ADD_EXECUTABLE(relayd main.c dhcp.c route.c)
-TARGET_LINK_LIBRARIES(relayd ubox)
+TARGET_LINK_LIBRARIES(relayd ubox pcap)
 
 SET(CMAKE_INSTALL_PREFIX /usr)
 

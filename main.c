@@ -1,3 +1,4 @@
+// Copyright (C) 2022 Synaptics Incorporated. All rights reserved
 /*
  *   Copyright (C) 2010 Felix Fietkau <nbd@openwrt.org>
  *
@@ -13,8 +14,21 @@
  *   You should have received a copy of the GNU General Public License
  *   along with this program; if not, write to the Free Software
  *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307, USA.
- *
  */
+
+// INFORMATION CONTAINED IN THIS DOCUMENT IS PROVIDED "AS-IS,” AND SYNAPTICS
+// EXPRESSLY DISCLAIMS ALL EXPRESS AND IMPLIED WARRANTIES, INCLUDING ANY IMPLIED
+// WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE, AND ANY
+// WARRANTIES OF NON-INFRINGEMENT OF ANY INTELLECTUAL PROPERTY RIGHTS. IN NO
+// EVENT SHALL SYNAPTICS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+// PUNITIVE, OR CONSEQUENTIAL DAMAGES ARISING OUT OF OR IN CONNECTION WITH THE
+// USE OF THE INFORMATION CONTAINED IN THIS DOCUMENT, HOWEVER CAUSED AND BASED
+// ON ANY THEORY OF LIABILITY, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR
+// OTHER TORTIOUS ACTION, AND EVEN IF SYNAPTICS WAS ADVISED OF THE POSSIBILITY OF
+// SUCH DAMAGE. IF A TRIBUNAL OF COMPETENT JURISDICTION DOES NOT PERMIT THE
+// DISCLAIMER OF DIRECT DAMAGES OR ANY OTHER DAMAGES, SYNAPTICS’ TOTAL
+// CUMULATIVE LIABILITY TO ANY PARTY SHALL NOT EXCEED ONE HUNDRED U.S. DOLLARS.
+
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 
@@ -41,6 +55,8 @@ static int inet_sock;
 static int forward_bcast;
 static int forward_dhcp;
 static int parse_dhcp;
+static int sniff_dhcp_unicast_replies;
+static char sniff_dhcp_interface[IFNAMSIZ];
 
 uint8_t local_addr[4];
 int local_route_table;
@@ -50,6 +66,14 @@ struct relayd_pending_route {
 	struct uloop_timeout timeout;
 	uint8_t gateway[4];
 };
+
+static bool isExceptionalLocalAddress(const uint8_t* ipaddr)
+{
+	if (ipaddr[0] == 172 && ipaddr[1] == 16 && ipaddr[2] == 1) {
+		return true;
+	}
+	return false;
+}
 
 static struct relayd_host *find_host_by_ipaddr(struct relayd_interface *rif, const uint8_t *ipaddr)
 {
@@ -162,6 +186,10 @@ static void send_arp_request(struct relayd_interface *rif, const uint8_t *ipaddr
 {
 	struct arp_packet pkt;
 
+	if (isExceptionalLocalAddress(ipaddr))
+	{
+		return;
+	}
 	fill_arp_packet(&pkt, rif, rif->src_ip, ipaddr);
 
 	pkt.arp.arp_op = htons(ARPOP_REQUEST);
@@ -212,6 +240,10 @@ static void send_arp_reply(struct relayd_interface *rif, const uint8_t spa[4],
 {
 	struct arp_packet pkt;
 
+	if (isExceptionalLocalAddress(spa) || isExceptionalLocalAddress(tpa))
+	{
+		return;
+	}
 	fill_arp_packet(&pkt, rif, spa, tpa);
 
 	if (tha) {
@@ -331,7 +363,7 @@ struct relayd_host *relayd_refresh_host(struct relayd_interface *rif, const uint
 	if (!host) {
 		host = find_host_by_ipaddr(NULL, ipaddr);
 
-		/* 
+		/*
 		 * When we suddenly see the host appearing on a different interface,
 		 * reduce the timeout to make the old entry expire faster, in case the
 		 * host has moved.
@@ -358,6 +390,10 @@ static void relay_arp_request(struct relayd_interface *from_rif, struct arp_pack
 	struct relayd_interface *rif;
 	struct arp_packet reqpkt;
 
+	if (isExceptionalLocalAddress(reqpkt.arp.arp_tpa)
+			|| isExceptionalLocalAddress(reqpkt.arp.arp_spa)) {
+		return;
+	}
 	memcpy(&reqpkt, pkt, sizeof(reqpkt));
 	list_for_each_entry(rif, &interfaces, list) {
 		if (rif == from_rif)
@@ -516,6 +552,105 @@ static void recv_bcast_packet(struct uloop_fd *fd, unsigned int events)
 	} while (1);
 }
 
+static void recv_unicast_dhcp_reply_packet(struct uloop_fd *fd, unsigned int events)
+{
+	struct relayd_interface *rif = container_of(fd, struct relayd_interface, dhcp_unicast_sniffer_fd);
+	pcap_t* pcap_handle = rif->pcap_handle;
+	struct pcap_pkthdr* packetHeader;
+	const u_char* packetData;
+
+	uint8_t packetDataCopy[4096];
+
+	if (rif->fd.error)
+		uloop_end();
+
+	if (pcap_next_ex(pcap_handle, &packetHeader, &packetData) != 1) {
+		DPRINTF(2, "Wasn't able to fetch a packet\n");
+		return;
+	}
+
+	if (!packetHeader) {
+		DPRINTF(2, "Packet header error\n");
+		return;
+	}
+
+	if (!packetHeader->len) {
+		DPRINTF(2, "Packet header has length of 0\n");
+		return;
+	}
+
+	if (!forward_bcast && !forward_dhcp) {
+		DPRINTF(2, "Not forwarding things expected\n");
+		return;
+	}
+
+	if (packetHeader->len > 4096) {
+		DPRINTF(2, "Oh no! Big packet!\n");
+		return;
+	}
+
+	memcpy(&packetDataCopy[0], packetData, packetHeader->len);
+
+	if (!relayd_handle_unicast_dhcp_packet(rif, packetDataCopy, packetHeader->len, forward_dhcp, parse_dhcp)) {
+		DPRINTF(2, "Something went wrong forwarding packet..\n");
+		return;
+	}
+}
+
+int init_pcap_sniffer(char* interface, int* fd, pcap_t** handleOut)
+{
+	char errbuf[PCAP_ERRBUF_SIZE];
+
+	if (!interface) {
+		DPRINTF(1, "%s: interface not specified\n", __func__);
+		return -1;
+	}
+
+	bpf_u_int32 mask;
+	bpf_u_int32 net;
+	if (pcap_lookupnet(interface, &net, &mask, errbuf) == -1) {
+		DPRINTF(1, "Error getting ip and netmask for interface '%s': %s\n", interface, errbuf);
+		return -1;
+	}
+
+	int promiscuous = 0;
+	pcap_t* handle = pcap_open_live(interface, BUFSIZ, promiscuous, 1000, errbuf);
+	*handleOut = handle;
+	if (!handle) {
+		DPRINTF(1, "Error opening interface '%s': %s\n", interface, errbuf);
+		return -1;
+	}
+
+	if (pcap_datalink(handle) != DLT_EN10MB) {
+		DPRINTF(1, "Interface '%s' doesn't have ethernet headers\n", interface);
+		return 1;
+	}
+
+	struct bpf_program fp;
+	char filter_exp[] = "inbound and src port 67 and ip broadcast and not ether broadcast";
+	if (pcap_compile(handle, &fp, filter_exp, 1, net) == -1) {
+		DPRINTF(1, "Couldn't parse filter: %s: %s\n", filter_exp, pcap_geterr(handle));
+		return -1;
+	}
+
+	if (pcap_setfilter(handle, &fp) == -1) {
+		DPRINTF(1, "Couldn't install filter: %s: %s\n", filter_exp, pcap_geterr(handle));
+		return -1;
+	}
+
+	*fd = pcap_get_selectable_fd(handle);
+	if (*fd == -1) {
+		DPRINTF(1, "%s: Couldn't get selectable FD\n", __func__);
+		return -1;
+	}
+
+	if (pcap_get_required_select_timeout(handle) != NULL) {
+		DPRINTF(1, "%s: Required timeout not-NULL\n", __func__);
+		return -1;
+	}
+
+	return 0;
+}
 
 static int init_interface(struct relayd_interface *rif)
 {
@@ -526,6 +661,8 @@ static int init_interface(struct relayd_interface *rif)
 #ifdef PACKET_RECV_TYPE
 	unsigned int pkt_type;
 #endif
+
+	rif->pcap_handle = NULL;
 
 	fd = socket(AF_PACKET, SOCK_RAW, htons(ETH_P_ARP));
 	if (fd < 0)
@@ -595,6 +732,22 @@ static int init_interface(struct relayd_interface *rif)
 #endif
 
 	uloop_fd_add(&rif->bcast_fd, ULOOP_READ | ULOOP_EDGE_TRIGGER);
+
+	if (sniff_dhcp_unicast_replies && strcmp(sniff_dhcp_interface, rif->ifname) == 0) {
+		// Try and capture unicast DHCP replies from non-compliant DHCP servers using libpcap
+		pcap_t *pcap_handle;
+		if (init_pcap_sniffer(rif->ifname, &fd, &pcap_handle) < 0) {
+			return -1;
+		}
+
+		rif->dhcp_unicast_sniffer_fd.fd = fd;
+		rif->dhcp_unicast_sniffer_fd.cb = recv_unicast_dhcp_reply_packet;
+
+		rif->pcap_handle = pcap_handle;
+
+		uloop_fd_add(&rif->dhcp_unicast_sniffer_fd, ULOOP_READ | ULOOP_EDGE_TRIGGER);
+	}
+
 	relayd_add_interface_routes(rif);
 	return 0;
 }
@@ -641,6 +794,9 @@ static void free_interfaces(void)
 
 	list_for_each_entry_safe(rif, rtmp, &interfaces, list) {
 		relayd_del_interface_routes(rif);
+		if (rif->pcap_handle) {
+			pcap_close(rif->pcap_handle);
+		}
 		list_del(&rif->list);
 		free(rif);
 	}
@@ -698,6 +854,8 @@ static int usage(const char *progname)
 			"	-D		Enable DHCP forwarding\n"
 			"	-P		Disable DHCP options parsing\n"
 			"	-L <ipaddr>	Enable local access using <ipaddr> as source address\n"
+			"	-H <ifname>	Sniff for non-compliant DHCP replies unicast at L2 rather than broadcast\n"
+			"			Necessary to forward traffic from some DHCP routers\n"
 			"\n",
 		progname);
 	return -1;
@@ -726,9 +884,10 @@ int main(int argc, char **argv)
 	forward_bcast = 0;
 	local_route_table = 0;
 	parse_dhcp = 1;
+	sniff_dhcp_unicast_replies = 0;
 	uloop_init();
 
-	while ((ch = getopt(argc, argv, "I:i:t:p:BDPdT:G:R:L:")) != -1) {
+	while ((ch = getopt(argc, argv, "I:i:t:p:BDPdT:G:R:L:H:")) != -1) {
 		switch(ch) {
 		case 'I':
 			managed = true;
@@ -810,6 +969,16 @@ int main(int argc, char **argv)
 
 			relayd_add_pending_route((uint8_t *) &addr.s_addr, (uint8_t *) &addr2.s_addr, mask, 0);
 			break;
+		case 'H':
+			if (strlen(optarg) >= IFNAMSIZ) {
+				fprintf(stderr, "Interface name '%s' too long\n", optarg);
+				return 1;
+			}
+
+			sniff_dhcp_unicast_replies = 1;
+			strcpy(sniff_dhcp_interface, optarg);
+			break;
+
 		case '?':
 		default:
 			return usage(argv[0]);

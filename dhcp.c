@@ -1,3 +1,4 @@
+// Copyright (C) 2022 Synaptics Incorporated. All rights reserved
 /*
  *   Copyright (C) 2010 Felix Fietkau <nbd@openwrt.org>
  *
@@ -14,6 +15,19 @@
  *   along with this program; if not, write to the Free Software
  *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307, USA.
  */
+
+// INFORMATION CONTAINED IN THIS DOCUMENT IS PROVIDED "AS-IS,” AND SYNAPTICS
+// EXPRESSLY DISCLAIMS ALL EXPRESS AND IMPLIED WARRANTIES, INCLUDING ANY IMPLIED
+// WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE, AND ANY
+// WARRANTIES OF NON-INFRINGEMENT OF ANY INTELLECTUAL PROPERTY RIGHTS. IN NO
+// EVENT SHALL SYNAPTICS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+// PUNITIVE, OR CONSEQUENTIAL DAMAGES ARISING OUT OF OR IN CONNECTION WITH THE
+// USE OF THE INFORMATION CONTAINED IN THIS DOCUMENT, HOWEVER CAUSED AND BASED
+// ON ANY THEORY OF LIABILITY, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR
+// OTHER TORTIOUS ACTION, AND EVEN IF SYNAPTICS WAS ADVISED OF THE POSSIBILITY OF
+// SUCH DAMAGE. IF A TRIBUNAL OF COMPETENT JURISDICTION DOES NOT PERMIT THE
+// DISCLAIMER OF DIRECT DAMAGES OR ANY OTHER DAMAGES, SYNAPTICS’ TOTAL
+// CUMULATIVE LIABILITY TO ANY PARTY SHALL NOT EXCEED ONE HUNDRED U.S. DOLLARS.
 
 #define _GNU_SOURCE
 #include <sys/socket.h>
@@ -180,4 +194,13 @@ bool relayd_handle_dhcp_packet(struct relayd_interface *rif, void *data, int len
 	return true;
 }
 
+bool relayd_handle_unicast_dhcp_packet(struct relayd_interface *rif, void *data, int len, bool forward, bool parse)
+{
+	struct ip_packet *pkt = data;
+
+	DPRINTF(2, "%s: receive UNICAST DHCP, len: %d\n", rif->ifname, len);
+
+	memcpy(pkt->eth.ether_dhost, (uint8_t*)("\xff\xff\xff\xff\xff\xff"), sizeof(pkt->eth.ether_dhost));
+	return relayd_handle_dhcp_packet(rif, data, len, forward, parse);
+}
 

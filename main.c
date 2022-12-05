@@ -423,6 +423,11 @@ static void recv_arp_request(struct relayd_interface *rif, struct arp_packet *pk
 		IP_BUF(pkt->arp.arp_spa),
 		MAC_BUF(pkt->eth.ether_shost));
 
+	if (isExceptionalLocalAddress((const uint8_t*)pkt->arp.arp_spa)
+			|| isExceptionalLocalAddress((const uint8_t*)pkt->arp.arp_tpa)) {
+		return;
+	}
+
 	if (!memcmp(pkt->arp.arp_spa, "\x00\x00\x00\x00", 4))
 		return;
 
@@ -458,6 +463,11 @@ static void recv_arp_reply(struct relayd_interface *rif, struct arp_packet *pkt)
 		IP_BUF(pkt->arp.arp_spa),
 		MAC_BUF(pkt->eth.ether_shost),
 		IP_BUF(pkt->arp.arp_tpa));
+
+	if (isExceptionalLocalAddress((const uint8_t*)pkt->arp.arp_spa)
+			|| isExceptionalLocalAddress((const uint8_t*)pkt->arp.arp_tpa)) {
+		return;
+	}
 
 	if (memcmp(pkt->arp.arp_sha, rif->sll.sll_addr, ETH_ALEN) != 0)
 		relayd_refresh_host(rif, pkt->arp.arp_sha, pkt->arp.arp_spa);
@@ -838,6 +848,7 @@ static void die(int signo)
 static int usage(const char *progname)
 {
 	fprintf(stderr, "Usage: %s <options>\n"
+			"DL mod 2\n"
 			"\n"
 			"Options:\n"
 			"	-d		Enable debug messages\n"

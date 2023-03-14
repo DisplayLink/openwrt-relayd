@@ -1,4 +1,4 @@
-// Copyright (C) 2022 Synaptics Incorporated. All rights reserved
+// Copyright (C) 2022-2023 Synaptics Incorporated. All rights reserved
 /*
  *   Copyright (C) 2010 Felix Fietkau <nbd@openwrt.org>
  *
@@ -73,6 +73,16 @@ static bool isExceptionalLocalAddress(const uint8_t* ipaddr)
 		return true;
 	}
 	return false;
+}
+
+static void refreshExceptionalAddressInterfaceRoutes(struct relayd_interface *rif)
+{
+	struct relayd_host *host;
+	list_for_each_entry(host, &rif->hosts, list) {
+		host->cleanup_pending = false;
+		uloop_timeout_set(&host->timeout, host_timeout * 1000);
+		DPRINTF(1, "Refreshing host "IP_FMT"\n", IP_BUF(host->ipaddr));
+	}
 }
 
 static struct relayd_host *find_host_by_ipaddr(struct relayd_interface *rif, const uint8_t *ipaddr)
@@ -466,6 +476,7 @@ static void recv_arp_reply(struct relayd_interface *rif, struct arp_packet *pkt)
 
 	if (isExceptionalLocalAddress((const uint8_t*)pkt->arp.arp_spa)
 			|| isExceptionalLocalAddress((const uint8_t*)pkt->arp.arp_tpa)) {
+		refreshExceptionalAddressInterfaceRoutes(rif);
 		return;
 	}
 
